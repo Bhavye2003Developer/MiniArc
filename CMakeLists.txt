@@ -15,8 +15,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ── Fetch llama.cpp ──────────────────────────────────────────────────────────
-# Check https://github.com/ggerganov/llama.cpp/releases for the latest tag
-# and update GIT_TAG if b5891 is no longer the latest stable.
 include(FetchContent)
 FetchContent_Declare(
     llama
@@ -29,6 +27,19 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(llama)
+
+# ── Fetch cpp-httplib (header-only HTTP server) ───────────────────────────────
+# Fetch httplib header-only — bypass its CMakeLists to avoid OpenSSL auto-detection.
+FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG        v0.18.7
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(httplib)
+if(NOT httplib_POPULATED)
+    FetchContent_Populate(httplib)
+endif()
 
 # ── Core library ─────────────────────────────────────────────────────────────
 add_library(miniARC_core STATIC
@@ -51,9 +62,15 @@ endif()
 target_include_directories(miniARC_core PUBLIC src)
 target_link_libraries(miniARC_core PUBLIC llama)
 
-# ── CLI executable ────────────────────────────────────────────────────────────
-add_executable(miniARC src/main.cpp)
+# ── CLI + web server executable ──────────────────────────────────────────────
+add_executable(miniARC src/main.cpp src/server/server.cpp)
+target_include_directories(miniARC PRIVATE ${httplib_SOURCE_DIR})
+# httplib enables optional backends only when their macros are explicitly defined.
+# Defining nothing here means plain HTTP only — no OpenSSL/zlib needed.
 target_link_libraries(miniARC PRIVATE miniARC_core)
+if(WIN32)
+    target_link_libraries(miniARC PRIVATE ws2_32)
+endif()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()

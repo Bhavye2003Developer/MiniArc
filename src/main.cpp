@@ -1,6 +1,7 @@
 #include "engine/engine.h"
 #include "scheduler/scheduler.h"
 #include "thermal/thermal_monitor.h"
+#include "server/server.h"
 
 #include <iostream>
 #include <string>
@@ -10,6 +11,8 @@
 #include <cstdlib>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
+#include <ctime>
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -42,6 +45,20 @@ static const char* state_dot(ThermalState s) {
         case ThermalState::CRITICAL: return "✕";
     }
     return "?";
+}
+
+static std::string current_time() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    struct tm tm_buf {};
+#ifdef _WIN32
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    char buf[9];
+    std::strftime(buf, sizeof(buf), "%H:%M:%S", &tm_buf);
+    return buf;
 }
 
 static void print_banner(Engine& engine, ThermalState ts) {
@@ -88,12 +105,25 @@ int main(int argc, char* argv[]) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
-    // Determine model path
+
+    // ── Argument parsing ─────────────────────────────────────────────────────
+    bool serve_mode = false;
+    int  port       = 7860;
     std::string model_path;
-    if (argc >= 2) {
-        model_path = argv[1];
-    } else {
-        // Auto-discover first .gguf in models/
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--serve" || arg == "-s") {
+            serve_mode = true;
+        } else if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
+            port = std::atoi(argv[++i]);
+        } else if (model_path.empty() && arg[0] != '-') {
+            model_path = arg;
+        }
+    }
+
+    // Auto-discover model if not specified
+    if (model_path.empty()) {
         const fs::path models_dir("models");
         if (fs::exists(models_dir)) {
             for (auto& entry : fs::directory_iterator(models_dir)) {
@@ -145,12 +175,30 @@ int main(int argc, char* argv[]) {
     ThermalMonitor thermal(scheduler, on_thermal_change);
     Engine engine(model_path);
 
+    // ── Web server mode ───────────────────────────────────────────────────────
+    if (serve_mode) {
+        std::cout << "miniARC v0.1.0  ·  " << engine.current_model_name() << "\n";
+        std::cout << "Starting web server on port " << port << "...\n";
+        std::cout << "\n  Open in browser:  http://localhost:" << port << "\n\n";
+#ifdef _WIN32
+        std::string url = "http://localhost:" + std::to_string(port);
+        system(("start " + url).c_str());
+#elif defined(__APPLE__)
+        system(("open http://localhost:" + std::to_string(port)).c_str());
+#else
+        system(("xdg-open http://localhost:" + std::to_string(port) + " 2>/dev/null &").c_str());
+#endif
+        WebServer server(engine, scheduler, thermal);
+        server.run(port);
+        return 0;
+    }
+
+    // ── CLI chat loop ─────────────────────────────────────────────────────────
     print_banner(engine, thermal.current());
 
-    // ── Chat loop ────────────────────────────────────────────────────────────
     std::string line;
     while (!g_interrupted) {
-        std::cout << "You: " << std::flush;
+        std::cout << "[" << current_time() << "] You: " << std::flush;
 
         if (!std::getline(std::cin, line)) break; // EOF
         if (g_interrupted) break;
@@ -194,10 +242,16 @@ int main(int argc, char* argv[]) {
 
         // ── Generate ─────────────────────────────────────────────────────────
         std::cout << "miniARC: " << std::flush;
+        auto t_gen_start = std::chrono::steady_clock::now();
         engine.generate(line, scheduler, [](const std::string& tok) {
             std::cout << tok << std::flush;
         });
-        std::cout << "\n\n";
+        auto t_gen_end = std::chrono::steady_clock::now();
+        float elapsed = std::chrono::duration<float>(t_gen_end - t_gen_start).count();
+        std::cout << "\n("
+                  << std::fixed << std::setprecision(1) << elapsed << "s"
+                  << "  ·  " << engine.last_tokens_per_sec() << " tok/s"
+                  << ")\n\n";
     }
 
     std::cout << "\n[miniARC] Goodbye.\n";
