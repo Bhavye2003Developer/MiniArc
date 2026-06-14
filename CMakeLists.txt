@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
 project(miniARC VERSION 0.1.0 LANGUAGES CXX)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+endif()
+
 # Enable Objective-C++ on macOS for thermal_macos.mm
 if(APPLE)
     enable_language(OBJCXX)
@@ -38,19 +42,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_sources(miniARC_core PRIVATE src/thermal/thermal_linux.cpp)
 elseif(APPLE)
     target_sources(miniARC_core PRIVATE src/thermal/thermal_macos.mm)
-    set_source_files_properties(src/thermal/thermal_macos.mm
-        PROPERTIES COMPILE_FLAGS "-x objective-c++")
-    target_link_libraries(miniARC_core PUBLIC "-framework Foundation")
+    target_link_libraries(miniARC_core PRIVATE "-framework Foundation")
 elseif(WIN32)
     target_sources(miniARC_core PRIVATE src/thermal/thermal_windows.cpp)
-    target_link_libraries(miniARC_core PUBLIC wbemuuid ole32 oleaut32 PowrProf)
+    target_link_libraries(miniARC_core PRIVATE wbemuuid ole32 oleaut32 PowrProf)
 endif()
 
 target_include_directories(miniARC_core PUBLIC src)
 target_link_libraries(miniARC_core PUBLIC llama)
-
-# Disable llama.cpp log spam by default
-target_compile_definitions(miniARC_core PUBLIC GGML_USE_LLAMAFILE=0)
 
 # ── CLI executable ────────────────────────────────────────────────────────────
 add_executable(miniARC src/main.cpp)
