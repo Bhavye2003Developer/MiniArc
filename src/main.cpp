@@ -82,6 +82,7 @@ static void print_help() {
         "  /config           Show current sampling config\n"
         "  /set <p> <v>      Set a config param (see /config for names)\n"
         "  /clear            Reset conversation history\n"
+        "  /models           List available GGUF files in models/\n"
         "  /model <path>     Swap to a different GGUF file\n"
         "  /threads <n>      Override thread count (0 = auto)\n"
         "  /help             Show this message\n"
@@ -258,10 +259,27 @@ int main(int argc, char* argv[]) {
                         std::cout << "[" << param << " = " << val << "]\n\n";
                     }
                 }
+            } else if (cmd == "/models") {
+                const fs::path models_dir("models");
+                bool found = false;
+                if (fs::exists(models_dir) && fs::is_directory(models_dir)) {
+                    for (auto& entry : fs::directory_iterator(models_dir)) {
+                        if (entry.path().extension() == ".gguf") {
+                            std::string name = entry.path().filename().string();
+                            bool active = (name == engine.current_model_name());
+                            std::cout << "  " << (active ? "* " : "  ")
+                                      << entry.path().string() << "\n";
+                            found = true;
+                        }
+                    }
+                }
+                if (!found) std::cout << "  (no .gguf files found in models/)\n";
+                std::cout << "\n";
             } else if (cmd == "/model") {
                 std::string path; ss >> path;
                 if (path.empty()) {
-                    std::cout << "Usage: /model <path-to-file.gguf>\n\n";
+                    std::cout << "Usage: /model <path-to-file.gguf>\n"
+                              << "       /models  to list available files\n\n";
                 } else if (!engine.swap_model(path)) {
                     std::cout << "[Failed to load model: " << path << "]\n\n";
                 } else {
