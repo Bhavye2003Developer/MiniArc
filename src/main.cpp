@@ -223,27 +223,31 @@ int main(int argc, char* argv[]) {
             } else if (cmd == "/config") {
                 auto cfg = engine.get_config();
                 std::cout << std::fixed << std::setprecision(2)
-                          << "  temperature  : " << cfg.temperature    << "\n"
-                          << "  top_k        : " << cfg.top_k          << "\n"
-                          << "  top_p        : " << cfg.top_p          << "\n"
-                          << "  rep_penalty  : " << cfg.repeat_penalty << "\n"
-                          << "  max_tokens   : " << cfg.max_new_tokens
-                          << " (0 = fill context)\n\n";
+                          << "  temperature  : " << cfg.temperature      << "\n"
+                          << "  top_k        : " << cfg.top_k            << "\n"
+                          << "  top_p        : " << cfg.top_p            << "\n"
+                          << "  rep_penalty  : " << cfg.repeat_penalty   << "\n"
+                          << "  max_in_tok   : " << cfg.max_prompt_tokens
+                          << "  (max input tokens before trimming history)\n"
+                          << "  max_out_tok  : " << cfg.max_new_tokens
+                          << "  (0 = fill remaining context)\n\n";
             } else if (cmd == "/set") {
                 std::string param, val;
                 ss >> param >> val;
                 if (param.empty() || val.empty()) {
                     std::cout << "Usage: /set <param> <value>\n"
-                              << "Params: temperature, top_k, top_p, rep_penalty, max_tokens\n\n";
+                              << "Params: temperature, top_k, top_p, rep_penalty,\n"
+                              << "        max_in_tok, max_out_tok\n\n";
                 } else {
                     auto cfg = engine.get_config();
                     bool ok = true;
                     try {
-                        if      (param == "temperature")  cfg.temperature    = std::stof(val);
-                        else if (param == "top_k")        cfg.top_k          = std::stoi(val);
-                        else if (param == "top_p")        cfg.top_p          = std::stof(val);
-                        else if (param == "rep_penalty")  cfg.repeat_penalty = std::stof(val);
-                        else if (param == "max_tokens")   cfg.max_new_tokens = std::stoi(val);
+                        if      (param == "temperature")  cfg.temperature       = std::stof(val);
+                        else if (param == "top_k")        cfg.top_k             = std::stoi(val);
+                        else if (param == "top_p")        cfg.top_p             = std::stof(val);
+                        else if (param == "rep_penalty")  cfg.repeat_penalty    = std::stof(val);
+                        else if (param == "max_in_tok")   cfg.max_prompt_tokens = std::stoi(val);
+                        else if (param == "max_out_tok")  cfg.max_new_tokens    = std::stoi(val);
                         else { std::cout << "Unknown param: " << param
                                          << ". Try /config for names.\n\n"; ok = false; }
                     } catch (...) {

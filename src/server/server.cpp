@@ -198,7 +198,15 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;bac
   <div class="cfg-divider"></div>
 
   <div class="cfg-row">
-    <div class="cfg-lbl">Max Tokens <span class="cfg-val" id="vMax">512</span></div>
+    <div class="cfg-lbl">Max Input Tokens <span class="cfg-val" id="vMaxIn">1500</span></div>
+    <input type="range" id="sMaxIn" min="128" max="1792" step="64" value="1500">
+    <div class="cfg-desc">Max prompt length before oldest history turns are dropped.</div>
+  </div>
+
+  <div class="cfg-divider"></div>
+
+  <div class="cfg-row">
+    <div class="cfg-lbl">Max Output Tokens <span class="cfg-val" id="vMax">512</span></div>
     <input type="range" id="sMax" min="64" max="1024" step="32" value="512">
     <div class="cfg-desc">Maximum tokens to generate per response.</div>
   </div>
@@ -224,13 +232,14 @@ const cfgApply=document.getElementById('cfgApply');
 const cfgReset=document.getElementById('cfgReset');
 
 // ── Config panel ─────────────────────────────────────────────────────────────
-const DEFAULTS={temperature:0.7,top_k:40,top_p:0.95,repeat_penalty:1.15,max_new_tokens:512};
+const DEFAULTS={temperature:0.7,top_k:40,top_p:0.95,repeat_penalty:1.15,max_prompt_tokens:1500,max_new_tokens:512};
 const sliders=[
-  {id:'sTemp',vid:'vTemp',key:'temperature',    dec:2},
-  {id:'sTopK',vid:'vTopK',key:'top_k',          dec:0},
-  {id:'sTopP',vid:'vTopP',key:'top_p',          dec:2},
-  {id:'sRep', vid:'vRep', key:'repeat_penalty', dec:2},
-  {id:'sMax', vid:'vMax', key:'max_new_tokens', dec:0},
+  {id:'sTemp',vid:'vTemp',key:'temperature',     dec:2},
+  {id:'sTopK',vid:'vTopK',key:'top_k',           dec:0},
+  {id:'sTopP',vid:'vTopP',key:'top_p',           dec:2},
+  {id:'sRep', vid:'vRep', key:'repeat_penalty',  dec:2},
+  {id:'sMaxIn',vid:'vMaxIn',key:'max_prompt_tokens',dec:0},
+  {id:'sMax', vid:'vMax', key:'max_new_tokens',  dec:0},
 ];
 
 sliders.forEach(s=>{
@@ -528,11 +537,12 @@ void WebServer::run(int port) {
         ModelConfig cfg = m_engine.get_config();
         std::ostringstream j;
         j << std::fixed << std::setprecision(4);
-        j << "{\"temperature\":"    << cfg.temperature
-          << ",\"top_k\":"          << cfg.top_k
-          << ",\"top_p\":"          << cfg.top_p
-          << ",\"repeat_penalty\":" << cfg.repeat_penalty
-          << ",\"max_new_tokens\":" << cfg.max_new_tokens
+        j << "{\"temperature\":"      << cfg.temperature
+          << ",\"top_k\":"            << cfg.top_k
+          << ",\"top_p\":"            << cfg.top_p
+          << ",\"repeat_penalty\":"   << cfg.repeat_penalty
+          << ",\"max_prompt_tokens\":" << cfg.max_prompt_tokens
+          << ",\"max_new_tokens\":"   << cfg.max_new_tokens
           << "}";
         res.set_content(j.str(), "application/json");
     });
@@ -550,23 +560,26 @@ void WebServer::run(int port) {
             if (!s.empty()) try { v = std::stoi(s); } catch (...) {}
         };
 
-        parse_f("temperature",    cfg.temperature);
-        parse_i("top_k",          cfg.top_k);
-        parse_f("top_p",          cfg.top_p);
-        parse_f("repeat_penalty", cfg.repeat_penalty);
-        parse_i("max_new_tokens", cfg.max_new_tokens);
+        parse_f("temperature",      cfg.temperature);
+        parse_i("top_k",            cfg.top_k);
+        parse_f("top_p",            cfg.top_p);
+        parse_f("repeat_penalty",   cfg.repeat_penalty);
+        parse_i("max_prompt_tokens", cfg.max_prompt_tokens);
+        parse_i("max_new_tokens",   cfg.max_new_tokens);
 
         // Clamp to sane ranges
-        if (cfg.temperature    < 0.0f) cfg.temperature    = 0.0f;
-        if (cfg.temperature    > 2.0f) cfg.temperature    = 2.0f;
-        if (cfg.top_k          < 1)    cfg.top_k          = 1;
-        if (cfg.top_k          > 200)  cfg.top_k          = 200;
-        if (cfg.top_p          < 0.0f) cfg.top_p          = 0.0f;
-        if (cfg.top_p          > 1.0f) cfg.top_p          = 1.0f;
-        if (cfg.repeat_penalty < 1.0f) cfg.repeat_penalty = 1.0f;
-        if (cfg.repeat_penalty > 2.0f) cfg.repeat_penalty = 2.0f;
-        if (cfg.max_new_tokens < 32)   cfg.max_new_tokens = 32;
-        if (cfg.max_new_tokens > 2048) cfg.max_new_tokens = 2048;
+        if (cfg.temperature      < 0.0f) cfg.temperature      = 0.0f;
+        if (cfg.temperature      > 2.0f) cfg.temperature      = 2.0f;
+        if (cfg.top_k            < 1)    cfg.top_k            = 1;
+        if (cfg.top_k            > 200)  cfg.top_k            = 200;
+        if (cfg.top_p            < 0.0f) cfg.top_p            = 0.0f;
+        if (cfg.top_p            > 1.0f) cfg.top_p            = 1.0f;
+        if (cfg.repeat_penalty   < 1.0f) cfg.repeat_penalty   = 1.0f;
+        if (cfg.repeat_penalty   > 2.0f) cfg.repeat_penalty   = 2.0f;
+        if (cfg.max_prompt_tokens < 128)  cfg.max_prompt_tokens = 128;
+        if (cfg.max_prompt_tokens > 1792) cfg.max_prompt_tokens = 1792;
+        if (cfg.max_new_tokens   < 32)   cfg.max_new_tokens   = 32;
+        if (cfg.max_new_tokens   > 2048) cfg.max_new_tokens   = 2048;
 
         {
             std::lock_guard<std::mutex> lk(m_gen_mutex);
@@ -575,11 +588,12 @@ void WebServer::run(int port) {
 
         std::ostringstream j;
         j << std::fixed << std::setprecision(4);
-        j << "{\"temperature\":"    << cfg.temperature
-          << ",\"top_k\":"          << cfg.top_k
-          << ",\"top_p\":"          << cfg.top_p
-          << ",\"repeat_penalty\":" << cfg.repeat_penalty
-          << ",\"max_new_tokens\":" << cfg.max_new_tokens
+        j << "{\"temperature\":"      << cfg.temperature
+          << ",\"top_k\":"            << cfg.top_k
+          << ",\"top_p\":"            << cfg.top_p
+          << ",\"repeat_penalty\":"   << cfg.repeat_penalty
+          << ",\"max_prompt_tokens\":" << cfg.max_prompt_tokens
+          << ",\"max_new_tokens\":"   << cfg.max_new_tokens
           << "}";
         res.set_content(j.str(), "application/json");
     });

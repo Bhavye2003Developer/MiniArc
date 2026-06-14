@@ -11,11 +11,12 @@ struct ChatTurn {
 };
 
 struct ModelConfig {
-    float temperature    = 0.7f;
-    int   top_k          = 40;
-    float top_p          = 0.95f;
-    float repeat_penalty = 1.15f;
-    int   max_new_tokens = 512;    // 0 = fill remaining context
+    float temperature      = 0.7f;
+    int   top_k            = 40;
+    float top_p            = 0.95f;
+    float repeat_penalty   = 1.15f;
+    int   max_prompt_tokens = 1500;  // max input tokens before history trimming kicks in
+    int   max_new_tokens   = 512;    // max output tokens per response (0 = fill context)
 };
 
 class Engine {

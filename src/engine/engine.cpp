@@ -177,11 +177,17 @@ void Engine::generate(const std::string& user_input,
             std::cerr << "\nminiARC: tokenization failed\n";
             return;
         }
-        if (n_prompt <= m_n_ctx - MIN_GEN_TOKENS) break;
+        int prompt_limit = (m_config.max_prompt_tokens > 0)
+            ? m_config.max_prompt_tokens : m_n_ctx - MIN_GEN_TOKENS;
+        if (prompt_limit > m_n_ctx - MIN_GEN_TOKENS) prompt_limit = m_n_ctx - MIN_GEN_TOKENS;
+        if (n_prompt <= prompt_limit) break;
         if (m_history.size() < 2) break;
         m_history.erase(m_history.begin(), m_history.begin() + 2);
     }
-    if (n_prompt > m_n_ctx - MIN_GEN_TOKENS) {
+    int final_prompt_limit = (m_config.max_prompt_tokens > 0)
+        ? m_config.max_prompt_tokens : m_n_ctx - MIN_GEN_TOKENS;
+    if (final_prompt_limit > m_n_ctx - MIN_GEN_TOKENS) final_prompt_limit = m_n_ctx - MIN_GEN_TOKENS;
+    if (n_prompt > final_prompt_limit) {
         std::cerr << "\nminiARC: prompt too long to fit in context even after trimming\n";
         return;
     }
