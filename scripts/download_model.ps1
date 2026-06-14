@@ -22,7 +22,7 @@ $wc.DownloadProgressChanged += {
     Write-Progress -Activity "Downloading" -Status "$($e.ProgressPercentage)%" `
                    -PercentComplete $e.ProgressPercentage
 }
-$task = $wc.DownloadFileTaskAsync($HfUrl, (Resolve-Path ".").Path + "\$Dest")
+$task = $wc.DownloadFileTaskAsync($HfUrl, [System.IO.Path]::GetFullPath($Dest))
 $task.Wait()
 
 Write-Host ""
