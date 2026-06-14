@@ -116,10 +116,19 @@ class WindowsThermalMonitor : public IThermalMonitor {
 public:
     WindowsThermalMonitor() = default;
 
-    ~WindowsThermalMonitor() {
-        if (m_svc) m_svc->Release();
-        if (m_loc) m_loc->Release();
-        if (m_com_inited) CoUninitialize();  // Fix 3: balance CoInitializeEx
+    // Called by the poll thread before it exits — correct thread for COM teardown.
+    void on_thread_exit() override {
+        if (m_svc) { m_svc->Release(); m_svc = nullptr; }
+        if (m_loc) { m_loc->Release(); m_loc = nullptr; }
+        if (m_com_inited) { CoUninitialize(); m_com_inited = false; }
+    }
+
+    ~WindowsThermalMonitor() override {
+        // on_thread_exit() handles COM teardown on the correct thread.
+        // Null-release any survivors (e.g., if thread never started).
+        if (m_svc) { m_svc->Release(); m_svc = nullptr; }
+        if (m_loc) { m_loc->Release(); m_loc = nullptr; }
+        // Do NOT call CoUninitialize here — wrong thread.
     }
 
     ThermalState read() override {

@@ -20,6 +20,7 @@ class IThermalMonitor {
 public:
     virtual ~IThermalMonitor() = default;
     virtual ThermalState read() = 0;
+    virtual void on_thread_exit() {}  // called by poll thread before it exits; use for thread-affine cleanup (e.g. COM)
 };
 
 // Factory: returns the right impl for this platform (Linux/macOS/Windows)

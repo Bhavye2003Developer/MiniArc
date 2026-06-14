@@ -11,6 +11,11 @@
 #include <sstream>
 #include <iomanip>
 
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 // ── Globals for signal handler ───────────────────────────────────────────────
@@ -79,6 +84,10 @@ static void print_status(Engine& engine, Scheduler& scheduler, ThermalState ts) 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
     // Determine model path
     std::string model_path;
     if (argc >= 2) {

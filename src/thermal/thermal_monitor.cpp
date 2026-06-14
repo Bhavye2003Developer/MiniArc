@@ -31,4 +31,5 @@ void ThermalMonitor::poll_loop() {
         std::unique_lock<std::mutex> lk(m_cv_mu);
         m_cv.wait_for(lk, std::chrono::seconds(2), [this]{ return !m_running.load(); });
     }
+    m_impl->on_thread_exit();
 }

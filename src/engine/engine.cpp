@@ -1,5 +1,6 @@
 #include "engine/engine.h"
 #include "llama.h"
+#include "ggml.h"
 #include <iostream>
 #include <cstring>
 #include <thread>
@@ -43,7 +44,7 @@ Engine::Engine(const std::string& model_path, int n_ctx)
     : m_n_ctx(n_ctx)
 {
     llama_backend_init();
-    llama_log_set(nullptr, nullptr); // suppress llama.cpp log output
+    llama_log_set([](ggml_log_level, const char*, void*){}, nullptr);
     load(model_path);
 }
 
@@ -65,7 +66,7 @@ void Engine::load(const std::string& path) {
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx     = m_n_ctx;
-    cparams.n_batch   = 512;
+    cparams.n_batch   = m_n_ctx;   // must be >= n_ctx so full prompt fits in one decode call
     cparams.n_threads = static_cast<int>(std::thread::hardware_concurrency());
 
     m_ctx = llama_init_from_model(m_model, cparams);
@@ -79,6 +80,8 @@ void Engine::load(const std::string& path) {
     m_sampler = llama_sampler_chain_init(sparams);
     llama_sampler_chain_add(m_sampler, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_top_p(0.95f, 1));
+    // Penalize recent repetitions after narrowing vocabulary (API note: avoid on full vocab).
+    llama_sampler_chain_add(m_sampler, llama_sampler_init_penalties(64, 1.15f, 0.0f, 0.0f));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 }
@@ -100,7 +103,7 @@ bool Engine::swap_model(const std::string& new_path) {
     }
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx     = m_n_ctx;
-    cparams.n_batch   = 512;
+    cparams.n_batch   = m_n_ctx;
     cparams.n_threads = static_cast<int>(std::thread::hardware_concurrency());
     m_ctx = llama_init_from_model(m_model, cparams);
     if (!m_ctx) {
@@ -117,6 +120,7 @@ bool Engine::swap_model(const std::string& new_path) {
     }
     llama_sampler_chain_add(m_sampler, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_top_p(0.95f, 1));
+    llama_sampler_chain_add(m_sampler, llama_sampler_init_penalties(64, 1.15f, 0.0f, 0.0f));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     m_model_path = new_path;
@@ -182,8 +186,9 @@ void Engine::generate(const std::string& user_input,
     }
     prompt_tokens.resize(n_prompt);
 
-    // Reset KV cache — full re-encode each turn
+    // Reset KV cache and sampler state — full re-encode each turn
     llama_memory_clear(llama_get_memory(m_ctx), false);
+    llama_sampler_reset(m_sampler);
 
     // Encode prompt in one batch
     {
@@ -206,57 +211,100 @@ void Engine::generate(const std::string& user_input,
     }
 
     std::string response;
+    std::string pending;                         // sliding window for EOT detection
+    static const std::string EOT = "<|im_end|>";
+    static const std::string EOS = "<|endoftext|>";
     int pos = n_prompt;
     auto t_start = std::chrono::steady_clock::now();
     int n_generated = 0;
 
+    // Cache params; re-check thermal every 32 tokens (thermal polls every 2s).
+    InferenceParams p = scheduler.current_params();
+    llama_set_n_threads(m_ctx, p.n_threads, p.n_threads);
+    int thermal_tick = 0;
+
     while (pos < m_n_ctx) {
-        // Check thermal pause before each token
-        {
-            InferenceParams p = scheduler.current_params();
-            while (p.paused) {
+        // Periodic thermal check — avoid a mutex acquisition on every token.
+        if (++thermal_tick >= 32) {
+            thermal_tick = 0;
+            InferenceParams np = scheduler.current_params();
+            while (np.paused) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                p = scheduler.current_params();
+                np = scheduler.current_params();
             }
-            llama_set_n_threads(m_ctx, p.n_threads, p.n_threads);
+            if (np.n_threads != p.n_threads) {
+                llama_set_n_threads(m_ctx, np.n_threads, np.n_threads);
+            }
+            p = np;
         }
 
+        // llama_sampler_sample calls accept internally — do NOT call accept again
         llama_token tok = llama_sampler_sample(m_sampler, m_ctx, -1);
-        llama_sampler_accept(m_sampler, tok);
 
         const llama_vocab* vocab = llama_model_get_vocab(m_model);
         if (llama_vocab_is_eog(vocab, tok)) break;
 
         char piece[256];
         int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, true);
+        std::string text;
         if (n < 0) {
-            // buffer too small — allocate dynamically and retry
             std::vector<char> big((-n) + 1);
             n = llama_token_to_piece(vocab, tok, big.data(), (int)big.size(), 0, true);
-            if (n > 0) {
-                std::string text(big.data(), n);
-                cb(text);
-                response += text;
-                ++n_generated;
-            }
+            if (n > 0) text.assign(big.data(), n);
         } else if (n > 0) {
-            std::string text(piece, n);
-            cb(text);
-            response += text;
-            ++n_generated;
+            text.assign(piece, n);
         }
 
-        // Feed generated token back for next position
-        llama_batch single = llama_batch_init(1, 0, 1);
-        single.token[0]     = tok;
-        single.pos[0]       = pos++;
-        single.n_seq_id[0]  = 1;
-        if (single.seq_id && single.seq_id[0]) single.seq_id[0][0] = 0;
-        single.logits[0]    = true;
-        single.n_tokens     = 1;
+        if (!text.empty()) {
+            // Accumulate in sliding window to detect EOT marker spanning pieces.
+            pending += text;
+
+            // Keep window bounded (EOT is 10 chars, EOS is 13 chars — keep last 13)
+            const size_t WINDOW = 13;
+            bool found_eot = (pending.find(EOT) != std::string::npos ||
+                              pending.find(EOS) != std::string::npos);
+            if (found_eot) {
+                // Flush everything before the first marker and stop.
+                size_t cut = pending.find(EOT);
+                size_t cut2 = pending.find(EOS);
+                if (cut == std::string::npos) cut = cut2;
+                else if (cut2 != std::string::npos) cut = (cut < cut2) ? cut : cut2;
+                if (cut > 0) {
+                    cb(pending.substr(0, cut));
+                    response += pending.substr(0, cut);
+                    ++n_generated;
+                }
+                pending.clear();  // prevent double-emit in the post-loop flush
+                break;
+            }
+            // Flush the "safe" prefix — everything except the last WINDOW-1 chars
+            // which might be the beginning of an EOT marker.
+            if (pending.size() > WINDOW) {
+                size_t safe = pending.size() - (WINDOW - 1);
+                cb(pending.substr(0, safe));
+                response += pending.substr(0, safe);
+                ++n_generated;
+                pending = pending.substr(safe);
+            }
+        }
+
+        // Feed generated token back for next position using the official helper
+        llama_batch single = llama_batch_get_one(&tok, 1);
+        pos++;
         int dc = llama_decode(m_ctx, single);
-        llama_batch_free(single);
         if (dc != 0) break;  // decode failed, stop generation
+    }
+
+    // Flush remaining pending, stripping any trailing EOT marker.
+    if (!pending.empty()) {
+        size_t eot_pos = pending.find(EOT);
+        if (eot_pos == std::string::npos) eot_pos = pending.find(EOS);
+        if (eot_pos == std::string::npos) eot_pos = pending.size();
+        if (eot_pos > 0) {
+            cb(pending.substr(0, eot_pos));
+            response += pending.substr(0, eot_pos);
+        }
+        pending.clear();
     }
 
     auto t_end = std::chrono::steady_clock::now();
