@@ -131,13 +131,14 @@ std::string Engine::format_prompt(const std::string& user_input) {
     }
     msgs.push_back({"user", user_input.c_str()});
 
+    const char* tmpl = llama_model_chat_template(m_model, nullptr);
     std::vector<char> buf(8192);
-    int n = llama_chat_apply_template(m_model, nullptr,
+    int n = llama_chat_apply_template(tmpl,
                                       msgs.data(), msgs.size(),
                                       true,
                                       buf.data(), (int)buf.size());
     if (n < 0) {
-        // Fallback: Qwen-style raw template
+        // Fallback: Qwen-style ChatML template
         std::string out = "<|im_start|>system\n" + SYSTEM_PROMPT + "<|im_end|>\n";
         for (auto& t : m_history)
             out += "<|im_start|>" + t.role + "\n" + t.content + "<|im_end|>\n";
@@ -146,7 +147,7 @@ std::string Engine::format_prompt(const std::string& user_input) {
     }
     if (n > (int)buf.size()) {
         buf.resize(n + 1);
-        llama_chat_apply_template(m_model, nullptr,
+        llama_chat_apply_template(tmpl,
                                   msgs.data(), msgs.size(), true,
                                   buf.data(), (int)buf.size());
     }
@@ -163,7 +164,7 @@ void Engine::generate(const std::string& user_input,
     int n_prompt = 0;
     for (int attempt = 0; attempt < 50; ++attempt) {
         std::string prompt = format_prompt(user_input);
-        n_prompt = llama_tokenize(m_model,
+        n_prompt = llama_tokenize(llama_model_get_vocab(m_model),
                                   prompt.c_str(), (int)prompt.size(),
                                   prompt_tokens.data(), (int)prompt_tokens.size(),
                                   true, false);
@@ -182,7 +183,7 @@ void Engine::generate(const std::string& user_input,
     prompt_tokens.resize(n_prompt);
 
     // Reset KV cache — full re-encode each turn
-    llama_kv_cache_clear(m_ctx);
+    llama_memory_clear(llama_get_memory(m_ctx), false);
 
     // Encode prompt in one batch
     {
@@ -223,14 +224,15 @@ void Engine::generate(const std::string& user_input,
         llama_token tok = llama_sampler_sample(m_sampler, m_ctx, -1);
         llama_sampler_accept(m_sampler, tok);
 
-        if (llama_token_is_eog(m_model, tok)) break;
+        const llama_vocab* vocab = llama_model_get_vocab(m_model);
+        if (llama_vocab_is_eog(vocab, tok)) break;
 
         char piece[256];
-        int n = llama_token_to_piece(m_model, tok, piece, sizeof(piece), 0, true);
+        int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, true);
         if (n < 0) {
             // buffer too small — allocate dynamically and retry
             std::vector<char> big((-n) + 1);
-            n = llama_token_to_piece(m_model, tok, big.data(), (int)big.size(), 0, true);
+            n = llama_token_to_piece(vocab, tok, big.data(), (int)big.size(), 0, true);
             if (n > 0) {
                 std::string text(big.data(), n);
                 cb(text);
