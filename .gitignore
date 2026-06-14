@@ -1,0 +1,13 @@
+build/
+.cache/
+*.exe
+*.o
+*.a
+*.lib
+models/*.gguf
+models/*.bin
+.DS_Store
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
