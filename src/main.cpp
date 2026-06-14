@@ -17,6 +17,7 @@
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#  include <shellapi.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -120,6 +121,10 @@ int main(int argc, char* argv[]) {
             serve_mode = true;
         } else if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
             port = std::atoi(argv[++i]);
+            if (port < 1 || port > 65535) {
+                std::cerr << "Invalid port: must be 1-65535\n";
+                return 1;
+            }
         } else if (model_path.empty() && arg[0] != '-') {
             model_path = arg;
         }
@@ -184,8 +189,10 @@ int main(int argc, char* argv[]) {
         std::cout << "Starting web server on port " << port << "...\n";
         std::cout << "\n  Open in browser:  http://localhost:" << port << "\n\n";
 #ifdef _WIN32
-        std::string url = "http://localhost:" + std::to_string(port);
-        system(("start " + url).c_str());
+        // ShellExecuteA avoids spawning a shell, eliminating any injection surface.
+        ShellExecuteA(NULL, "open",
+                      ("http://localhost:" + std::to_string(port)).c_str(),
+                      NULL, NULL, SW_SHOWNORMAL);
 #elif defined(__APPLE__)
         system(("open http://localhost:" + std::to_string(port)).c_str());
 #else

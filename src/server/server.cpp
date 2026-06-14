@@ -571,6 +571,15 @@ WebServer::WebServer(Engine& engine, Scheduler& scheduler, ThermalMonitor& therm
 void WebServer::run(int port) {
     httplib::Server svr;
 
+    // Block requests with oversized bodies (protects against memory exhaustion).
+    svr.set_payload_max_length(1 * 1024 * 1024); // 1 MB
+
+    // Minimal security headers; no CSP because we use inline scripts/styles.
+    svr.set_default_headers({
+        {"X-Content-Type-Options", "nosniff"},
+        {"X-Frame-Options",        "DENY"},
+    });
+
     // ── Frontend ─────────────────────────────────────────────────────────────
     svr.Get("/", [](const httplib::Request&, httplib::Response& res) {
         static const std::string html_full = std::string(HTML_1) + HTML_2;
@@ -628,20 +637,7 @@ void WebServer::run(int port) {
         parse_i("max_prompt_tokens", cfg.max_prompt_tokens);
         parse_i("max_new_tokens",   cfg.max_new_tokens);
 
-        // Clamp to sane ranges
-        if (cfg.temperature      < 0.0f) cfg.temperature      = 0.0f;
-        if (cfg.temperature      > 2.0f) cfg.temperature      = 2.0f;
-        if (cfg.top_k            < 1)    cfg.top_k            = 1;
-        if (cfg.top_k            > 200)  cfg.top_k            = 200;
-        if (cfg.top_p            < 0.0f) cfg.top_p            = 0.0f;
-        if (cfg.top_p            > 1.0f) cfg.top_p            = 1.0f;
-        if (cfg.repeat_penalty   < 1.0f) cfg.repeat_penalty   = 1.0f;
-        if (cfg.repeat_penalty   > 2.0f) cfg.repeat_penalty   = 2.0f;
-        if (cfg.max_prompt_tokens < 128)  cfg.max_prompt_tokens = 128;
-        if (cfg.max_prompt_tokens > 1792) cfg.max_prompt_tokens = 1792;
-        if (cfg.max_new_tokens   < 32)   cfg.max_new_tokens   = 32;
-        if (cfg.max_new_tokens   > 2048) cfg.max_new_tokens   = 2048;
-
+        // Clamping is enforced inside engine.set_config().
         {
             std::lock_guard<std::mutex> lk(m_gen_mutex);
             m_engine.set_config(cfg);
@@ -693,10 +689,21 @@ void WebServer::run(int port) {
             res.set_content("{\"ok\":false,\"error\":\"missing path\"}", "application/json");
             return;
         }
+
+        // Prevent path traversal: must be a .gguf file directly inside models/.
+        fs::path norm = fs::path(path).lexically_normal();
+        if (norm.extension() != ".gguf" ||
+            norm.parent_path() != fs::path("models") ||
+            !fs::exists(norm)) {
+            res.status = 403;
+            res.set_content("{\"ok\":false,\"error\":\"invalid model path\"}", "application/json");
+            return;
+        }
+
         bool ok;
         {
             std::lock_guard<std::mutex> lk(m_gen_mutex);
-            ok = m_engine.swap_model(path);
+            ok = m_engine.swap_model(norm.string());
         }
         if (ok) {
             std::ostringstream j;
@@ -741,7 +748,7 @@ void WebServer::run(int port) {
     });
 
     std::cout << "\n  miniARC web UI  →  http://localhost:" << port << "\n\n";
-    if (!svr.listen("0.0.0.0", port)) {
+    if (!svr.listen("127.0.0.1", port)) {
         std::cerr << "miniARC: could not bind to port " << port
                   << " (already in use?). Try --port <N>\n";
     }

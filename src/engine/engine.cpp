@@ -67,6 +67,19 @@ void Engine::rebuild_sampler() {
 
 void Engine::set_config(const ModelConfig& cfg) {
     m_config = cfg;
+    // Clamp to valid ranges regardless of call site (CLI or web).
+    if (m_config.temperature      < 0.0f)  m_config.temperature      = 0.0f;
+    if (m_config.temperature      > 2.0f)  m_config.temperature      = 2.0f;
+    if (m_config.top_k            < 1)     m_config.top_k            = 1;
+    if (m_config.top_k            > 200)   m_config.top_k            = 200;
+    if (m_config.top_p            < 0.0f)  m_config.top_p            = 0.0f;
+    if (m_config.top_p            > 1.0f)  m_config.top_p            = 1.0f;
+    if (m_config.repeat_penalty   < 1.0f)  m_config.repeat_penalty   = 1.0f;
+    if (m_config.repeat_penalty   > 2.0f)  m_config.repeat_penalty   = 2.0f;
+    if (m_config.max_prompt_tokens < 128)  m_config.max_prompt_tokens = 128;
+    if (m_config.max_prompt_tokens > 1792) m_config.max_prompt_tokens = 1792;
+    if (m_config.max_new_tokens   < 32)    m_config.max_new_tokens   = 32;
+    if (m_config.max_new_tokens   > 2048)  m_config.max_new_tokens   = 2048;
     rebuild_sampler();
 }
 
