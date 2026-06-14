@@ -43,9 +43,8 @@ header{display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:
 
 /* ── Chat area ── */
 .chat{flex:1;overflow-y:auto;padding:22px 18px;display:flex;flex-direction:column;gap:18px;scroll-behavior:smooth}
-.chat::-webkit-scrollbar{width:4px}
-.chat::-webkit-scrollbar-thumb{background:var(--br);border-radius:4px}
-.chat{scrollbar-width:thin;scrollbar-color:var(--br) transparent}
+.chat::-webkit-scrollbar{display:none}
+.chat{scrollbar-width:none}
 
 /* ── Welcome screen ── */
 .welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;margin:auto;text-align:center;padding:48px 20px}
@@ -73,8 +72,8 @@ header{display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:
 textarea{flex:1;background:transparent;border:0;outline:0;resize:none;font-family:inherit;font-size:14px;color:var(--tx);line-height:1.5;min-height:21px;max-height:140px;overflow-y:auto;display:block}
 textarea::placeholder{color:var(--t2)}
 textarea:disabled{opacity:.5;cursor:default}
-textarea::-webkit-scrollbar{width:3px}
-textarea::-webkit-scrollbar-thumb{background:var(--br);border-radius:3px}
+textarea::-webkit-scrollbar{display:none}
+textarea{scrollbar-width:none}
 .sbtn{width:35px;height:35px;border-radius:10px;background:var(--ac);border:0;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#fff;transition:all .15s;flex-shrink:0;box-shadow:0 2px 8px var(--ac)44}
 .sbtn:hover:not(:disabled){background:var(--ac2);transform:scale(1.07)}
 .sbtn:active:not(:disabled){transform:scale(.96)}
@@ -91,7 +90,8 @@ textarea::-webkit-scrollbar-thumb{background:var(--br);border-radius:3px}
 /* ── Config panel ── */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:20;opacity:0;pointer-events:none;transition:opacity .2s}
 .overlay.open{opacity:1;pointer-events:all}
-.cfg-panel{position:fixed;top:0;right:0;height:100%;width:290px;background:var(--s1);border-left:1px solid var(--br);z-index:21;transform:translateX(100%);transition:transform .25s cubic-bezier(.4,0,.2,1);padding:20px;display:flex;flex-direction:column;gap:16px;overflow-y:auto}
+.cfg-panel{position:fixed;top:0;right:0;height:100%;width:290px;background:var(--s1);border-left:1px solid var(--br);z-index:21;transform:translateX(100%);transition:transform .25s cubic-bezier(.4,0,.2,1);padding:20px;display:flex;flex-direction:column;gap:16px;overflow-y:auto;scrollbar-width:none}
+.cfg-panel::-webkit-scrollbar{display:none}
 .cfg-panel.open{transform:none}
 .cfg-hdr{display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--br)}
 .cfg-hdr h3{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--t2)}
