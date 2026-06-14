@@ -48,7 +48,7 @@ private:
     struct llama_context* m_ctx     = nullptr;
     struct llama_sampler* m_sampler = nullptr;
 
-    int m_n_ctx;
+    int m_n_ctx = 2048;
     std::vector<ChatTurn> m_history;
     float m_tps = 0.0f;
     std::string m_model_path;

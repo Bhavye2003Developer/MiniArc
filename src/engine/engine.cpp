@@ -5,6 +5,8 @@
 #include <thread>
 #include <chrono>
 
+static constexpr int MIN_GEN_TOKENS = 256;
+
 #ifdef _WIN32
 #  include <windows.h>
 #  include <psapi.h>
@@ -89,7 +91,6 @@ void Engine::unload() {
 
 bool Engine::swap_model(const std::string& new_path) {
     unload();
-    m_model_path = new_path;
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0;
     m_model = llama_model_load_from_file(new_path.c_str(), mparams);
@@ -104,14 +105,21 @@ bool Engine::swap_model(const std::string& new_path) {
     m_ctx = llama_init_from_model(m_model, cparams);
     if (!m_ctx) {
         std::cerr << "miniARC: failed to create context\n";
+        unload();
         return false;
     }
     auto sparams = llama_sampler_chain_default_params();
     m_sampler = llama_sampler_chain_init(sparams);
+    if (!m_sampler) {
+        std::cerr << "miniARC: failed to init sampler chain\n";
+        unload();
+        return false;
+    }
     llama_sampler_chain_add(m_sampler, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_top_p(0.95f, 1));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(m_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    m_model_path = new_path;
     return true;
 }
 
@@ -140,7 +148,7 @@ std::string Engine::format_prompt(const std::string& user_input) {
         buf.resize(n + 1);
         llama_chat_apply_template(m_model, nullptr,
                                   msgs.data(), msgs.size(), true,
-                                  buf.data(), n);
+                                  buf.data(), (int)buf.size());
     }
     return std::string(buf.data(), n);
 }
@@ -163,9 +171,13 @@ void Engine::generate(const std::string& user_input,
             std::cerr << "\nminiARC: tokenization failed\n";
             return;
         }
-        if (n_prompt <= m_n_ctx - 256) break; // fits
+        if (n_prompt <= m_n_ctx - MIN_GEN_TOKENS) break; // fits
         if (m_history.size() < 2) break;       // can't trim further
         m_history.erase(m_history.begin(), m_history.begin() + 2);
+    }
+    if (n_prompt > m_n_ctx - MIN_GEN_TOKENS) {
+        std::cerr << "\nminiARC: prompt too long to fit in context even after trimming\n";
+        return;
     }
     prompt_tokens.resize(n_prompt);
 
@@ -179,7 +191,7 @@ void Engine::generate(const std::string& user_input,
             batch.token[i]      = prompt_tokens[i];
             batch.pos[i]        = i;
             batch.n_seq_id[i]   = 1;
-            batch.seq_id[i][0]  = 0;
+            if (batch.seq_id && batch.seq_id[i]) batch.seq_id[i][0] = 0;
             batch.logits[i]     = false;
         }
         batch.logits[n_prompt - 1] = true;
@@ -214,8 +226,18 @@ void Engine::generate(const std::string& user_input,
         if (llama_token_is_eog(m_model, tok)) break;
 
         char piece[256];
-        int n = llama_token_to_piece(m_model, tok, piece, sizeof(piece), 0, false);
-        if (n > 0) {
+        int n = llama_token_to_piece(m_model, tok, piece, sizeof(piece), 0, true);
+        if (n < 0) {
+            // buffer too small — allocate dynamically and retry
+            std::vector<char> big((-n) + 1);
+            n = llama_token_to_piece(m_model, tok, big.data(), (int)big.size(), 0, true);
+            if (n > 0) {
+                std::string text(big.data(), n);
+                cb(text);
+                response += text;
+                ++n_generated;
+            }
+        } else if (n > 0) {
             std::string text(piece, n);
             cb(text);
             response += text;
@@ -227,7 +249,7 @@ void Engine::generate(const std::string& user_input,
         single.token[0]     = tok;
         single.pos[0]       = pos++;
         single.n_seq_id[0]  = 1;
-        single.seq_id[0][0] = 0;
+        if (single.seq_id && single.seq_id[0]) single.seq_id[0][0] = 0;
         single.logits[0]    = true;
         single.n_tokens     = 1;
         int dc = llama_decode(m_ctx, single);
