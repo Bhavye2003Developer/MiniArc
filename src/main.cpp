@@ -79,6 +79,8 @@ static void print_help() {
     std::cout <<
         "Commands:\n"
         "  /status           Live thermal, threads, RAM, speed\n"
+        "  /config           Show current sampling config\n"
+        "  /set <p> <v>      Set a config param (see /config for names)\n"
         "  /clear            Reset conversation history\n"
         "  /model <path>     Swap to a different GGUF file\n"
         "  /threads <n>      Override thread count (0 = auto)\n"
@@ -218,6 +220,40 @@ int main(int argc, char* argv[]) {
                 std::cout << "[History cleared]\n\n";
             } else if (cmd == "/status") {
                 print_status(engine, scheduler, thermal.current());
+            } else if (cmd == "/config") {
+                auto cfg = engine.get_config();
+                std::cout << std::fixed << std::setprecision(2)
+                          << "  temperature  : " << cfg.temperature    << "\n"
+                          << "  top_k        : " << cfg.top_k          << "\n"
+                          << "  top_p        : " << cfg.top_p          << "\n"
+                          << "  rep_penalty  : " << cfg.repeat_penalty << "\n"
+                          << "  max_tokens   : " << cfg.max_new_tokens
+                          << " (0 = fill context)\n\n";
+            } else if (cmd == "/set") {
+                std::string param, val;
+                ss >> param >> val;
+                if (param.empty() || val.empty()) {
+                    std::cout << "Usage: /set <param> <value>\n"
+                              << "Params: temperature, top_k, top_p, rep_penalty, max_tokens\n\n";
+                } else {
+                    auto cfg = engine.get_config();
+                    bool ok = true;
+                    try {
+                        if      (param == "temperature")  cfg.temperature    = std::stof(val);
+                        else if (param == "top_k")        cfg.top_k          = std::stoi(val);
+                        else if (param == "top_p")        cfg.top_p          = std::stof(val);
+                        else if (param == "rep_penalty")  cfg.repeat_penalty = std::stof(val);
+                        else if (param == "max_tokens")   cfg.max_new_tokens = std::stoi(val);
+                        else { std::cout << "Unknown param: " << param
+                                         << ". Try /config for names.\n\n"; ok = false; }
+                    } catch (...) {
+                        std::cout << "Invalid value: " << val << "\n\n"; ok = false;
+                    }
+                    if (ok) {
+                        engine.set_config(cfg);
+                        std::cout << "[" << param << " = " << val << "]\n\n";
+                    }
+                }
             } else if (cmd == "/model") {
                 std::string path; ss >> path;
                 if (path.empty()) {

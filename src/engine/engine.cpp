@@ -31,9 +31,9 @@ static size_t process_ram_mb() {
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
 #ifdef __APPLE__
-    return ru.ru_maxrss / (1024 * 1024); // bytes on macOS
+    return ru.ru_maxrss / (1024 * 1024);
 #else
-    return ru.ru_maxrss / 1024; // KB on Linux
+    return ru.ru_maxrss / 1024;
 #endif
 #endif
 }
@@ -53,10 +53,27 @@ Engine::~Engine() {
     llama_backend_free();
 }
 
+void Engine::rebuild_sampler() {
+    if (m_sampler) { llama_sampler_free(m_sampler); m_sampler = nullptr; }
+    auto sparams = llama_sampler_chain_default_params();
+    m_sampler = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(m_sampler, llama_sampler_init_top_k(m_config.top_k));
+    llama_sampler_chain_add(m_sampler, llama_sampler_init_top_p(m_config.top_p, 1));
+    // Penalize after narrowing vocabulary (API note: avoid on full vocab).
+    llama_sampler_chain_add(m_sampler, llama_sampler_init_penalties(64, m_config.repeat_penalty, 0.0f, 0.0f));
+    llama_sampler_chain_add(m_sampler, llama_sampler_init_temp(m_config.temperature));
+    llama_sampler_chain_add(m_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+}
+
+void Engine::set_config(const ModelConfig& cfg) {
+    m_config = cfg;
+    rebuild_sampler();
+}
+
 void Engine::load(const std::string& path) {
     m_model_path = path;
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0; // CPU only in Phase 1
+    mparams.n_gpu_layers = 0;
 
     m_model = llama_model_load_from_file(path.c_str(), mparams);
     if (!m_model) {
@@ -66,7 +83,7 @@ void Engine::load(const std::string& path) {
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx     = m_n_ctx;
-    cparams.n_batch   = m_n_ctx;   // must be >= n_ctx so full prompt fits in one decode call
+    cparams.n_batch   = m_n_ctx;
     cparams.n_threads = static_cast<int>(std::thread::hardware_concurrency());
 
     m_ctx = llama_init_from_model(m_model, cparams);
@@ -75,15 +92,7 @@ void Engine::load(const std::string& path) {
         std::exit(1);
     }
 
-    // Build sampler chain
-    auto sparams = llama_sampler_chain_default_params();
-    m_sampler = llama_sampler_chain_init(sparams);
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_top_k(40));
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_top_p(0.95f, 1));
-    // Penalize recent repetitions after narrowing vocabulary (API note: avoid on full vocab).
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_penalties(64, 1.15f, 0.0f, 0.0f));
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_temp(0.7f));
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    rebuild_sampler();
 }
 
 void Engine::unload() {
@@ -111,18 +120,12 @@ bool Engine::swap_model(const std::string& new_path) {
         unload();
         return false;
     }
-    auto sparams = llama_sampler_chain_default_params();
-    m_sampler = llama_sampler_chain_init(sparams);
+    rebuild_sampler();
     if (!m_sampler) {
         std::cerr << "miniARC: failed to init sampler chain\n";
         unload();
         return false;
     }
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_top_k(40));
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_top_p(0.95f, 1));
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_penalties(64, 1.15f, 0.0f, 0.0f));
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_temp(0.7f));
-    llama_sampler_chain_add(m_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     m_model_path = new_path;
     return true;
 }
@@ -142,7 +145,6 @@ std::string Engine::format_prompt(const std::string& user_input) {
                                       true,
                                       buf.data(), (int)buf.size());
     if (n < 0) {
-        // Fallback: Qwen-style ChatML template
         std::string out = "<|im_start|>system\n" + SYSTEM_PROMPT + "<|im_end|>\n";
         for (auto& t : m_history)
             out += "<|im_start|>" + t.role + "\n" + t.content + "<|im_end|>\n";
@@ -163,7 +165,6 @@ void Engine::generate(const std::string& user_input,
                       Scheduler&         scheduler,
                       const TokenCB&     cb)
 {
-    // Trim history until the formatted prompt fits in context
     std::vector<llama_token> prompt_tokens(m_n_ctx);
     int n_prompt = 0;
     for (int attempt = 0; attempt < 50; ++attempt) {
@@ -176,8 +177,8 @@ void Engine::generate(const std::string& user_input,
             std::cerr << "\nminiARC: tokenization failed\n";
             return;
         }
-        if (n_prompt <= m_n_ctx - MIN_GEN_TOKENS) break; // fits
-        if (m_history.size() < 2) break;       // can't trim further
+        if (n_prompt <= m_n_ctx - MIN_GEN_TOKENS) break;
+        if (m_history.size() < 2) break;
         m_history.erase(m_history.begin(), m_history.begin() + 2);
     }
     if (n_prompt > m_n_ctx - MIN_GEN_TOKENS) {
@@ -186,11 +187,9 @@ void Engine::generate(const std::string& user_input,
     }
     prompt_tokens.resize(n_prompt);
 
-    // Reset KV cache and sampler state — full re-encode each turn
     llama_memory_clear(llama_get_memory(m_ctx), false);
     llama_sampler_reset(m_sampler);
 
-    // Encode prompt in one batch
     {
         llama_batch batch = llama_batch_init(n_prompt, 0, 1);
         for (int i = 0; i < n_prompt; ++i) {
@@ -211,20 +210,23 @@ void Engine::generate(const std::string& user_input,
     }
 
     std::string response;
-    std::string pending;                         // sliding window for EOT detection
+    std::string pending;
     static const std::string EOT = "<|im_end|>";
     static const std::string EOS = "<|endoftext|>";
     int pos = n_prompt;
     auto t_start = std::chrono::steady_clock::now();
     int n_generated = 0;
 
-    // Cache params; re-check thermal every 32 tokens (thermal polls every 2s).
+    // Determine generation limit from config (0 = fill remaining context).
+    int max_gen = (m_config.max_new_tokens > 0) ? m_config.max_new_tokens : m_n_ctx;
+    int max_pos = n_prompt + max_gen;
+    if (max_pos > m_n_ctx) max_pos = m_n_ctx;
+
     InferenceParams p = scheduler.current_params();
     llama_set_n_threads(m_ctx, p.n_threads, p.n_threads);
     int thermal_tick = 0;
 
-    while (pos < m_n_ctx) {
-        // Periodic thermal check — avoid a mutex acquisition on every token.
+    while (pos < max_pos) {
         if (++thermal_tick >= 32) {
             thermal_tick = 0;
             InferenceParams np = scheduler.current_params();
@@ -238,7 +240,6 @@ void Engine::generate(const std::string& user_input,
             p = np;
         }
 
-        // llama_sampler_sample calls accept internally — do NOT call accept again
         llama_token tok = llama_sampler_sample(m_sampler, m_ctx, -1);
 
         const llama_vocab* vocab = llama_model_get_vocab(m_model);
@@ -256,15 +257,12 @@ void Engine::generate(const std::string& user_input,
         }
 
         if (!text.empty()) {
-            // Accumulate in sliding window to detect EOT marker spanning pieces.
             pending += text;
 
-            // Keep window bounded (EOT is 10 chars, EOS is 13 chars — keep last 13)
             const size_t WINDOW = 13;
             bool found_eot = (pending.find(EOT) != std::string::npos ||
                               pending.find(EOS) != std::string::npos);
             if (found_eot) {
-                // Flush everything before the first marker and stop.
                 size_t cut = pending.find(EOT);
                 size_t cut2 = pending.find(EOS);
                 if (cut == std::string::npos) cut = cut2;
@@ -274,11 +272,9 @@ void Engine::generate(const std::string& user_input,
                     response += pending.substr(0, cut);
                     ++n_generated;
                 }
-                pending.clear();  // prevent double-emit in the post-loop flush
+                pending.clear();
                 break;
             }
-            // Flush the "safe" prefix — everything except the last WINDOW-1 chars
-            // which might be the beginning of an EOT marker.
             if (pending.size() > WINDOW) {
                 size_t safe = pending.size() - (WINDOW - 1);
                 cb(pending.substr(0, safe));
@@ -288,14 +284,12 @@ void Engine::generate(const std::string& user_input,
             }
         }
 
-        // Feed generated token back for next position using the official helper
         llama_batch single = llama_batch_get_one(&tok, 1);
         pos++;
         int dc = llama_decode(m_ctx, single);
-        if (dc != 0) break;  // decode failed, stop generation
+        if (dc != 0) break;
     }
 
-    // Flush remaining pending, stripping any trailing EOT marker.
     if (!pending.empty()) {
         size_t eot_pos = pending.find(EOT);
         if (eot_pos == std::string::npos) eot_pos = pending.find(EOS);

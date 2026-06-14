@@ -5,10 +5,11 @@
 #include <iomanip>
 #include <cstdio>
 #include <iostream>
+#include <stdexcept>
 
 // ── Embedded frontend ────────────────────────────────────────────────────────
 
-static const char* HTML = R"html(<!DOCTYPE html>
+static const char HTML_1[] = R"html(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -79,14 +80,40 @@ textarea::-webkit-scrollbar-thumb{background:var(--br);border-radius:3px}
 .sbtn:disabled{opacity:.3;cursor:not-allowed;transform:none;box-shadow:none}
 .hint{font-size:11px;color:var(--t2);text-align:center;margin-top:7px;opacity:.5}
 
-/* ── Loading dots (while AI is generating) ── */
+/* ── Loading dots ── */
 .thinking{display:flex;gap:4px;align-items:center;padding:12px 16px}
 .thinking span{width:6px;height:6px;border-radius:50%;background:var(--t2);animation:dots .9s infinite}
 .thinking span:nth-child(2){animation-delay:.15s}
 .thinking span:nth-child(3){animation-delay:.3s}
 @keyframes dots{0%,80%,100%{transform:scale(.7);opacity:.4}40%{transform:scale(1);opacity:1}}
 
-@media(max-width:580px){.msg{max-width:95%}.pills{display:none}}
+/* ── Config panel ── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:20;opacity:0;pointer-events:none;transition:opacity .2s}
+.overlay.open{opacity:1;pointer-events:all}
+.cfg-panel{position:fixed;top:0;right:0;height:100%;width:290px;background:var(--s1);border-left:1px solid var(--br);z-index:21;transform:translateX(100%);transition:transform .25s cubic-bezier(.4,0,.2,1);padding:20px;display:flex;flex-direction:column;gap:16px;overflow-y:auto}
+.cfg-panel.open{transform:none}
+.cfg-hdr{display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--br)}
+.cfg-hdr h3{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--t2)}
+.cfg-close{background:0;border:0;cursor:pointer;color:var(--t2);font-size:17px;line-height:1;padding:2px 4px;transition:color .15s}
+.cfg-close:hover{color:var(--tx)}
+.cfg-row{display:flex;flex-direction:column;gap:8px}
+.cfg-lbl{font-size:12px;font-weight:500;color:var(--t2);display:flex;justify-content:space-between;align-items:center}
+.cfg-val{font-size:12px;color:var(--tx);font-weight:600;font-variant-numeric:tabular-nums;background:var(--s2);padding:2px 8px;border-radius:5px;border:1px solid var(--br);min-width:44px;text-align:center}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:3px;border-radius:2px;background:var(--br);outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--ac);cursor:pointer;transition:transform .1s,box-shadow .1s}
+input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.25);box-shadow:0 0 0 4px var(--ac)33}
+input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:var(--ac);cursor:pointer;border:none}
+.cfg-desc{font-size:11px;color:var(--t2);line-height:1.5;opacity:.75}
+.cfg-divider{height:1px;background:var(--br);margin:2px 0}
+.cfg-actions{margin-top:auto;padding-top:14px;border-top:1px solid var(--br);display:flex;gap:8px}
+.cfg-actions button{flex:1;padding:8px 0;border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s}
+.cfg-reset{background:0;border:1px solid var(--br);color:var(--t2)}
+.cfg-reset:hover{background:var(--s2);color:var(--tx);border-color:var(--ac)}
+.cfg-apply{background:var(--ac);border:1px solid var(--ac);color:#fff}
+.cfg-apply:hover{background:var(--ac2)}
+.cfg-apply:active{transform:scale(.97)}
+
+@media(max-width:580px){.msg{max-width:95%}.pills{display:none}.cfg-panel{width:100%}}
 </style>
 </head>
 <body>
@@ -105,6 +132,7 @@ textarea::-webkit-scrollbar-thumb{background:var(--br);border-radius:3px}
     <div class="pill"><span id="slbl">&#8212; tok/s</span></div>
   </div>
   <button class="clr" id="clrBtn">Clear</button>
+  <button class="clr" id="cfgBtn" title="Model config">&#9881;</button>
 </header>
 
 <div class="chat" id="chat">
@@ -129,13 +157,127 @@ textarea::-webkit-scrollbar-thumb{background:var(--br);border-radius:3px}
 </div>
 
 </div><!-- .app -->
-<script>
+
+<div class="overlay" id="overlay"></div>
+<div class="cfg-panel" id="cfgPanel">
+  <div class="cfg-hdr">
+    <h3>Model Config</h3>
+    <button class="cfg-close" id="cfgClose">&#10005;</button>
+  </div>
+
+  <div class="cfg-row">
+    <div class="cfg-lbl">Temperature <span class="cfg-val" id="vTemp">0.70</span></div>
+    <input type="range" id="sTemp" min="0" max="2" step="0.05" value="0.7">
+    <div class="cfg-desc">Higher = more creative &amp; varied. Lower = focused &amp; deterministic.</div>
+  </div>
+
+  <div class="cfg-divider"></div>
+
+  <div class="cfg-row">
+    <div class="cfg-lbl">Top-K <span class="cfg-val" id="vTopK">40</span></div>
+    <input type="range" id="sTopK" min="1" max="100" step="1" value="40">
+    <div class="cfg-desc">Restrict sampling to the K most likely next tokens.</div>
+  </div>
+
+  <div class="cfg-divider"></div>
+
+  <div class="cfg-row">
+    <div class="cfg-lbl">Top-P <span class="cfg-val" id="vTopP">0.95</span></div>
+    <input type="range" id="sTopP" min="0" max="1" step="0.01" value="0.95">
+    <div class="cfg-desc">Nucleus sampling &mdash; cumulative probability threshold.</div>
+  </div>
+
+  <div class="cfg-divider"></div>
+
+  <div class="cfg-row">
+    <div class="cfg-lbl">Repeat Penalty <span class="cfg-val" id="vRep">1.15</span></div>
+    <input type="range" id="sRep" min="1" max="2" step="0.01" value="1.15">
+    <div class="cfg-desc">Penalize recently used tokens. 1.0 = off. Higher = less repetition.</div>
+  </div>
+
+  <div class="cfg-divider"></div>
+
+  <div class="cfg-row">
+    <div class="cfg-lbl">Max Tokens <span class="cfg-val" id="vMax">512</span></div>
+    <input type="range" id="sMax" min="64" max="1024" step="32" value="512">
+    <div class="cfg-desc">Maximum tokens to generate per response.</div>
+  </div>
+
+  <div class="cfg-actions">
+    <button class="cfg-reset" id="cfgReset">Reset</button>
+    <button class="cfg-apply" id="cfgApply">Apply</button>
+  </div>
+</div>
+)html";
+
+static const char HTML_2[] = R"html(<script>
 (function(){
 const chat=document.getElementById('chat');
 const inp=document.getElementById('inp');
 const sBtn=document.getElementById('sBtn');
 const clrBtn=document.getElementById('clrBtn');
+const cfgBtn=document.getElementById('cfgBtn');
+const overlay=document.getElementById('overlay');
+const cfgPanel=document.getElementById('cfgPanel');
+const cfgClose=document.getElementById('cfgClose');
+const cfgApply=document.getElementById('cfgApply');
+const cfgReset=document.getElementById('cfgReset');
 
+// ── Config panel ─────────────────────────────────────────────────────────────
+const DEFAULTS={temperature:0.7,top_k:40,top_p:0.95,repeat_penalty:1.15,max_new_tokens:512};
+const sliders=[
+  {id:'sTemp',vid:'vTemp',key:'temperature',    dec:2},
+  {id:'sTopK',vid:'vTopK',key:'top_k',          dec:0},
+  {id:'sTopP',vid:'vTopP',key:'top_p',          dec:2},
+  {id:'sRep', vid:'vRep', key:'repeat_penalty', dec:2},
+  {id:'sMax', vid:'vMax', key:'max_new_tokens', dec:0},
+];
+
+sliders.forEach(s=>{
+  const el=document.getElementById(s.id);
+  const vl=document.getElementById(s.vid);
+  el.addEventListener('input',()=>{vl.textContent=Number(el.value).toFixed(s.dec);});
+});
+
+function openCfg(){cfgPanel.classList.add('open');overlay.classList.add('open');loadCfg();}
+function closeCfg(){cfgPanel.classList.remove('open');overlay.classList.remove('open');}
+
+async function loadCfg(){
+  try{
+    const c=await(await fetch('/api/config')).json();
+    sliders.forEach(s=>{
+      const el=document.getElementById(s.id);
+      document.getElementById(s.vid).textContent=Number(c[s.key]).toFixed(s.dec);
+      el.value=c[s.key];
+    });
+  }catch{}
+}
+
+async function applyCfg(){
+  const body={};
+  sliders.forEach(s=>{
+    const v=document.getElementById(s.id).value;
+    body[s.key]=s.dec===0?parseInt(v,10):parseFloat(v);
+  });
+  try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch{}
+  closeCfg();
+}
+
+async function resetDefaults(){
+  try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(DEFAULTS)});}catch{}
+  sliders.forEach(s=>{
+    document.getElementById(s.id).value=DEFAULTS[s.key];
+    document.getElementById(s.vid).textContent=Number(DEFAULTS[s.key]).toFixed(s.dec);
+  });
+}
+
+cfgBtn.addEventListener('click',openCfg);
+cfgClose.addEventListener('click',closeCfg);
+overlay.addEventListener('click',closeCfg);
+cfgApply.addEventListener('click',applyCfg);
+cfgReset.addEventListener('click',resetDefaults);
+
+// ── Chat helpers ─────────────────────────────────────────────────────────────
 function ts(){
   return new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
@@ -163,10 +305,7 @@ function addMsg(role,time){
 
 function scrollBottom(){chat.scrollTop=chat.scrollHeight;}
 
-function setLocked(v){
-  sBtn.disabled=v;
-  inp.disabled=v;
-}
+function setLocked(v){sBtn.disabled=v;inp.disabled=v;}
 
 async function send(){
   const txt=inp.value.trim();
@@ -178,10 +317,8 @@ async function send(){
   inp.style.height='auto';
   setLocked(true);
 
-  const at=ts();
-  const{wrap,bub}=addMsg('ai',at);
+  const{wrap,bub}=addMsg('ai',ts());
 
-  // Show thinking dots while waiting for first token
   const dots=document.createElement('div');
   dots.className='thinking';
   dots.innerHTML='<span></span><span></span><span></span>';
@@ -206,7 +343,6 @@ async function send(){
       const{done,value}=await reader.read();
       if(done)break;
       buf+=dec.decode(value,{stream:true});
-
       let nl;
       while((nl=buf.indexOf('\n\n'))!==-1){
         const line=buf.slice(0,nl).trim();
@@ -216,11 +352,7 @@ async function send(){
         if(data==='[DONE]')break;
         let tok;
         try{tok=JSON.parse(data);}catch{continue;}
-        if(firstToken){
-          firstToken=false;
-          bub.innerHTML='';   // remove thinking dots
-          bub.classList.add('cursor');
-        }
+        if(firstToken){firstToken=false;bub.innerHTML='';bub.classList.add('cursor');}
         bub.textContent+=tok;
         scrollBottom();
       }
@@ -234,46 +366,33 @@ async function send(){
   if(firstToken){bub.innerHTML='';bub.textContent='(no response)';}
 
   const el=((performance.now()-t0)/1000).toFixed(1);
-  // Fetch fresh tps after generation
   let tpsStr='';
-  try{
-    const s=await(await fetch('/api/status')).json();
-    tpsStr=' \xb7 '+s.tps.toFixed(1)+' tok/s';
-  }catch{}
+  try{const s=await(await fetch('/api/status')).json();tpsStr=' \xb7 '+s.tps.toFixed(1)+' tok/s';}catch{}
   const rt=document.createElement('div');
-  rt.className='rt';
-  rt.textContent=el+'s'+tpsStr;
+  rt.className='rt';rt.textContent=el+'s'+tpsStr;
   wrap.appendChild(rt);
 
   setLocked(false);
   inp.focus();
 }
 
-// Auto-resize textarea
-inp.addEventListener('input',()=>{
-  inp.style.height='auto';
-  inp.style.height=Math.min(inp.scrollHeight,140)+'px';
-});
-
-inp.addEventListener('keydown',e=>{
-  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
-});
+inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,140)+'px';});
+inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}});
 sBtn.addEventListener('click',send);
 
 clrBtn.addEventListener('click',async()=>{
   try{await fetch('/api/clear',{method:'POST'});}catch{}
   chat.innerHTML='';
   const w=document.createElement('div');
-  w.className='welcome'; w.id='welcome';
+  w.className='welcome';w.id='welcome';
   w.innerHTML='<div class="w-icon">&#9889;</div><h2>miniARC</h2><p>On-device AI. Fully offline. Thermal-aware.<br>Ask me anything.</p>';
   chat.appendChild(w);
 });
 
-// Status polling
+// ── Status polling ────────────────────────────────────────────────────────────
 async function pollStatus(){
   try{
-    const r=await fetch('/api/status');
-    const s=await r.json();
+    const s=await(await fetch('/api/status')).json();
     const lc=s.thermal.toLowerCase()==='critical'?'crit':s.thermal.toLowerCase();
     document.getElementById('tdot').className='dot '+lc;
     document.getElementById('tlbl').textContent=s.thermal;
@@ -327,7 +446,7 @@ std::string WebServer::json_str(const std::string& s) {
     return out;
 }
 
-// Extract a string field value from a minimal JSON body like {"key":"value"}
+// Extract a JSON string field value from a body like {"key":"value"}
 static std::string json_get(const std::string& body, const std::string& key) {
     std::string needle = "\"" + key + "\"";
     size_t p = body.find(needle);
@@ -357,6 +476,23 @@ static std::string json_get(const std::string& body, const std::string& key) {
     return out;
 }
 
+// Extract a JSON numeric field value (returns raw text, caller converts)
+static std::string json_get_num(const std::string& body, const std::string& key) {
+    std::string needle = "\"" + key + "\"";
+    size_t p = body.find(needle);
+    if (p == std::string::npos) return "";
+    p = body.find(':', p + needle.size());
+    if (p == std::string::npos) return "";
+    ++p;
+    while (p < body.size() && (body[p] == ' ' || body[p] == '\t')) ++p;
+    std::string out;
+    while (p < body.size() && body[p] != ',' && body[p] != '}' &&
+           body[p] != ' ' && body[p] != '\n' && body[p] != '\r') {
+        out += body[p++];
+    }
+    return out;
+}
+
 // ── WebServer ────────────────────────────────────────────────────────────────
 
 WebServer::WebServer(Engine& engine, Scheduler& scheduler, ThermalMonitor& thermal)
@@ -367,7 +503,8 @@ void WebServer::run(int port) {
 
     // ── Frontend ─────────────────────────────────────────────────────────────
     svr.Get("/", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(HTML, "text/html; charset=utf-8");
+        static const std::string html_full = std::string(HTML_1) + HTML_2;
+        res.set_content(html_full, "text/html; charset=utf-8");
     });
 
     // ── Status ───────────────────────────────────────────────────────────────
@@ -382,6 +519,67 @@ void WebServer::run(int port) {
           << ",\"paused\":"    << (p.paused ? "true" : "false")
           << ",\"tps\":"       << m_engine.last_tokens_per_sec()
           << ",\"ram_mb\":"    << m_engine.ram_usage_mb()
+          << "}";
+        res.set_content(j.str(), "application/json");
+    });
+
+    // ── Get config ───────────────────────────────────────────────────────────
+    svr.Get("/api/config", [this](const httplib::Request&, httplib::Response& res) {
+        ModelConfig cfg = m_engine.get_config();
+        std::ostringstream j;
+        j << std::fixed << std::setprecision(4);
+        j << "{\"temperature\":"    << cfg.temperature
+          << ",\"top_k\":"          << cfg.top_k
+          << ",\"top_p\":"          << cfg.top_p
+          << ",\"repeat_penalty\":" << cfg.repeat_penalty
+          << ",\"max_new_tokens\":" << cfg.max_new_tokens
+          << "}";
+        res.set_content(j.str(), "application/json");
+    });
+
+    // ── Set config ───────────────────────────────────────────────────────────
+    svr.Post("/api/config", [this](const httplib::Request& req, httplib::Response& res) {
+        ModelConfig cfg = m_engine.get_config();
+
+        auto parse_f = [&](const std::string& k, float& v) {
+            std::string s = json_get_num(req.body, k);
+            if (!s.empty()) try { v = std::stof(s); } catch (...) {}
+        };
+        auto parse_i = [&](const std::string& k, int& v) {
+            std::string s = json_get_num(req.body, k);
+            if (!s.empty()) try { v = std::stoi(s); } catch (...) {}
+        };
+
+        parse_f("temperature",    cfg.temperature);
+        parse_i("top_k",          cfg.top_k);
+        parse_f("top_p",          cfg.top_p);
+        parse_f("repeat_penalty", cfg.repeat_penalty);
+        parse_i("max_new_tokens", cfg.max_new_tokens);
+
+        // Clamp to sane ranges
+        if (cfg.temperature    < 0.0f) cfg.temperature    = 0.0f;
+        if (cfg.temperature    > 2.0f) cfg.temperature    = 2.0f;
+        if (cfg.top_k          < 1)    cfg.top_k          = 1;
+        if (cfg.top_k          > 200)  cfg.top_k          = 200;
+        if (cfg.top_p          < 0.0f) cfg.top_p          = 0.0f;
+        if (cfg.top_p          > 1.0f) cfg.top_p          = 1.0f;
+        if (cfg.repeat_penalty < 1.0f) cfg.repeat_penalty = 1.0f;
+        if (cfg.repeat_penalty > 2.0f) cfg.repeat_penalty = 2.0f;
+        if (cfg.max_new_tokens < 32)   cfg.max_new_tokens = 32;
+        if (cfg.max_new_tokens > 2048) cfg.max_new_tokens = 2048;
+
+        {
+            std::lock_guard<std::mutex> lk(m_gen_mutex);
+            m_engine.set_config(cfg);
+        }
+
+        std::ostringstream j;
+        j << std::fixed << std::setprecision(4);
+        j << "{\"temperature\":"    << cfg.temperature
+          << ",\"top_k\":"          << cfg.top_k
+          << ",\"top_p\":"          << cfg.top_p
+          << ",\"repeat_penalty\":" << cfg.repeat_penalty
+          << ",\"max_new_tokens\":" << cfg.max_new_tokens
           << "}";
         res.set_content(j.str(), "application/json");
     });
