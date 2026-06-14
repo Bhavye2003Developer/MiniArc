@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <iostream>
 #include <stdexcept>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 // ── Embedded frontend ────────────────────────────────────────────────────────
 
@@ -114,6 +117,15 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;bac
 .cfg-apply:hover{background:var(--ac2)}
 .cfg-apply:active{transform:scale(.97)}
 
+/* ── Model selector ── */
+.cfg-sect-hdr{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--t2);margin-bottom:8px}
+.cfg-current{font-size:11.5px;color:var(--tx);background:var(--s2);border:1px solid var(--br);border-radius:6px;padding:5px 10px;margin-bottom:8px;word-break:break-all;line-height:1.5}
+.cfg-select{width:100%;background:var(--s2);border:1px solid var(--br);border-radius:8px;color:var(--tx);font-size:12px;padding:7px 10px;outline:none;cursor:pointer;transition:border-color .15s}
+.cfg-select:focus{border-color:var(--ac)}
+.cfg-select option{background:#12122a;color:var(--tx)}
+.cfg-load{width:100%;margin-top:8px;padding:8px 0;border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;background:transparent;border:1px solid var(--br);color:var(--tx);transition:all .15s}
+.cfg-load:hover:not(:disabled){border-color:var(--ac);color:var(--ac)}
+.cfg-load:disabled{opacity:.5;cursor:default}
 @media(max-width:580px){.msg{max-width:95%}.pills{display:none}.cfg-panel{width:100%}}
 </style>
 </head>
@@ -165,6 +177,17 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;bac
     <h3>Model Config</h3>
     <button class="cfg-close" id="cfgClose">&#10005;</button>
   </div>
+
+  <div>
+    <div class="cfg-sect-hdr">Base Model</div>
+    <div class="cfg-current" id="modelCurrent">&#8212;</div>
+    <select id="modelSel" class="cfg-select">
+      <option value="">Scanning models/&#8230;</option>
+    </select>
+    <button class="cfg-load" id="modelLoadBtn">Load Model</button>
+  </div>
+
+  <div class="cfg-divider"></div>
 
   <div class="cfg-row">
     <div class="cfg-lbl">Temperature <span class="cfg-val" id="vTemp">0.70</span></div>
@@ -249,7 +272,7 @@ sliders.forEach(s=>{
   el.addEventListener('input',()=>{vl.textContent=Number(el.value).toFixed(s.dec);});
 });
 
-function openCfg(){cfgPanel.classList.add('open');overlay.classList.add('open');loadCfg();}
+function openCfg(){cfgPanel.classList.add('open');overlay.classList.add('open');loadCfg();loadModels();}
 function closeCfg(){cfgPanel.classList.remove('open');overlay.classList.remove('open');}
 
 async function loadCfg(){
@@ -286,6 +309,43 @@ cfgClose.addEventListener('click',closeCfg);
 overlay.addEventListener('click',closeCfg);
 cfgApply.addEventListener('click',applyCfg);
 cfgReset.addEventListener('click',resetDefaults);
+
+// ── Model switching ───────────────────────────────────────────────────────────
+async function loadModels(){
+  try{
+    const d=await(await fetch('/api/models')).json();
+    document.getElementById('modelCurrent').textContent=d.current;
+    const sel=document.getElementById('modelSel');
+    sel.innerHTML='';
+    if(!d.models||!d.models.length){
+      sel.innerHTML='<option value="">No .gguf files found in models/</option>';
+      return;
+    }
+    d.models.forEach(m=>{
+      const o=document.createElement('option');
+      o.value=m.path;o.textContent=m.name;
+      if(m.name===d.current)o.selected=true;
+      sel.appendChild(o);
+    });
+  }catch{}
+}
+
+async function switchModel(){
+  const path=document.getElementById('modelSel').value;
+  if(!path)return;
+  const btn=document.getElementById('modelLoadBtn');
+  const cur=document.getElementById('modelCurrent');
+  btn.disabled=true;btn.textContent='Loading…';
+  cur.textContent='Switching model…';
+  try{
+    const r=await fetch('/api/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
+    const d=await r.json();
+    if(d.ok){cur.textContent=d.name;closeCfg();}
+    else{cur.textContent='Error: '+(d.error||'failed');}
+  }catch(e){cur.textContent='Error: '+e.message;}
+  btn.disabled=false;btn.textContent='Load Model';
+}
+document.getElementById('modelLoadBtn').addEventListener('click',switchModel);
 
 // ── Chat helpers ─────────────────────────────────────────────────────────────
 function ts(){
@@ -603,6 +663,49 @@ void WebServer::run(int port) {
     svr.Post("/api/clear", [this](const httplib::Request&, httplib::Response& res) {
         m_engine.clear_history();
         res.set_content("{\"ok\":true}", "application/json");
+    });
+
+    // ── List available models ─────────────────────────────────────────────────
+    svr.Get("/api/models", [this](const httplib::Request&, httplib::Response& res) {
+        std::ostringstream j;
+        j << "{\"current\":" << json_str(m_engine.current_model_name()) << ",\"models\":[";
+        bool first = true;
+        fs::path models_dir("models");
+        if (fs::exists(models_dir) && fs::is_directory(models_dir)) {
+            for (auto& entry : fs::directory_iterator(models_dir)) {
+                if (entry.path().extension() == ".gguf") {
+                    if (!first) j << ",";
+                    first = false;
+                    j << "{\"path\":" << json_str(entry.path().string())
+                      << ",\"name\":"  << json_str(entry.path().filename().string()) << "}";
+                }
+            }
+        }
+        j << "]}";
+        res.set_content(j.str(), "application/json");
+    });
+
+    // ── Switch model ──────────────────────────────────────────────────────────
+    svr.Post("/api/model", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string path = json_get(req.body, "path");
+        if (path.empty()) {
+            res.status = 400;
+            res.set_content("{\"ok\":false,\"error\":\"missing path\"}", "application/json");
+            return;
+        }
+        bool ok;
+        {
+            std::lock_guard<std::mutex> lk(m_gen_mutex);
+            ok = m_engine.swap_model(path);
+        }
+        if (ok) {
+            std::ostringstream j;
+            j << "{\"ok\":true,\"name\":" << json_str(m_engine.current_model_name()) << "}";
+            res.set_content(j.str(), "application/json");
+        } else {
+            res.status = 500;
+            res.set_content("{\"ok\":false,\"error\":\"failed to load model\"}", "application/json");
+        }
     });
 
     // ── Chat (SSE streaming) ─────────────────────────────────────────────────
