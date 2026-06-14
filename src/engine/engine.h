@@ -42,7 +42,6 @@ private:
     void unload();
 
     std::string format_prompt(const std::string& user_input);
-    void trim_history(int n_prompt_tokens);
 
     struct llama_model*   m_model   = nullptr;
     struct llama_context* m_ctx     = nullptr;

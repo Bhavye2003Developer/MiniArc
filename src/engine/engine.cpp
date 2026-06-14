@@ -143,32 +143,29 @@ std::string Engine::format_prompt(const std::string& user_input) {
     return std::string(buf.data(), n);
 }
 
-void Engine::trim_history(int n_prompt_tokens) {
-    // Drop oldest user+assistant pair to make room for at least 256 generation tokens
-    while (n_prompt_tokens > m_n_ctx - 256 && m_history.size() >= 2) {
-        m_history.erase(m_history.begin(), m_history.begin() + 2);
-        n_prompt_tokens -= 200; // rough estimate per turn
-    }
-}
 
 void Engine::generate(const std::string& user_input,
                       Scheduler&         scheduler,
                       const TokenCB&     cb)
 {
-    std::string prompt = format_prompt(user_input);
-
+    // Trim history until the formatted prompt fits in context
     std::vector<llama_token> prompt_tokens(m_n_ctx);
-    int n_prompt = llama_tokenize(m_model,
+    int n_prompt = 0;
+    for (int attempt = 0; attempt < 50; ++attempt) {
+        std::string prompt = format_prompt(user_input);
+        n_prompt = llama_tokenize(m_model,
                                   prompt.c_str(), (int)prompt.size(),
                                   prompt_tokens.data(), (int)prompt_tokens.size(),
-                                  true,   // add_special (BOS)
-                                  false); // parse_special
-    if (n_prompt < 0) {
-        std::cerr << "\nminiARC: tokenization failed\n";
-        return;
+                                  true, false);
+        if (n_prompt < 0) {
+            std::cerr << "\nminiARC: tokenization failed\n";
+            return;
+        }
+        if (n_prompt <= m_n_ctx - 256) break; // fits
+        if (m_history.size() < 2) break;       // can't trim further
+        m_history.erase(m_history.begin(), m_history.begin() + 2);
     }
     prompt_tokens.resize(n_prompt);
-    trim_history(n_prompt);
 
     // Reset KV cache — full re-encode each turn
     llama_kv_cache_clear(m_ctx);
@@ -231,8 +228,9 @@ void Engine::generate(const std::string& user_input,
         single.seq_id[0][0] = 0;
         single.logits[0]    = true;
         single.n_tokens     = 1;
-        llama_decode(m_ctx, single);
+        int dc = llama_decode(m_ctx, single);
         llama_batch_free(single);
+        if (dc != 0) break;  // decode failed, stop generation
     }
 
     auto t_end = std::chrono::steady_clock::now();
