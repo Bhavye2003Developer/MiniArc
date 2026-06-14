@@ -24,7 +24,7 @@ TEST_CASE("Scheduler: HOT caps at 2 threads and batch 128") {
     Scheduler s(8);
     s.update(ThermalState::HOT);
     auto p = s.current_params();
-    REQUIRE(p.n_threads <= 2);
+    REQUIRE(p.n_threads == 2);
     REQUIRE(p.n_batch == 128);
     REQUIRE(p.paused == false);
 }

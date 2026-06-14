@@ -19,6 +19,7 @@ TEST_CASE("temp_to_state: HOT->WARM hysteresis -- stays HOT between 78-80 degree
 
 TEST_CASE("temp_to_state: HOT->WARM hysteresis -- exits HOT below 78 degrees C") {
     REQUIRE(temp_to_state(77.9f, ThermalState::HOT) == ThermalState::WARM);
+    REQUIRE(temp_to_state(68.5f, ThermalState::HOT) == ThermalState::WARM);
     REQUIRE(temp_to_state(50.0f, ThermalState::HOT) == ThermalState::COOL);
 }
 
