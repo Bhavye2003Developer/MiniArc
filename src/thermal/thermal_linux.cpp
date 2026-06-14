@@ -40,6 +40,10 @@ class LinuxThermalMonitor : public IThermalMonitor {
 public:
     ThermalState read() override {
         float t = max_cpu_temp();
+        if (t <= 0.0f) {
+            // No readable zones — return previous state rather than silently reporting COOL
+            return m_prev;
+        }
         ThermalState next = temp_to_state(t, m_prev);
         m_prev = next;
         return next;

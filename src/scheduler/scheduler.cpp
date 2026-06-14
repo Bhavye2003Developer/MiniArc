@@ -30,7 +30,15 @@ void Scheduler::update(ThermalState state) {
 void Scheduler::override_threads(int n) {
     std::lock_guard<std::mutex> lock(m_mu);
     m_thread_override = n;
-    if (n > 0) m_params.n_threads = n;
+    if (n > 0) {
+        m_params.n_threads = n;
+        m_params.paused = false;  // manual override implies user wants to resume
+    }
+}
+
+void Scheduler::resume() {
+    std::lock_guard<std::mutex> lock(m_mu);
+    m_params.paused = false;
 }
 
 InferenceParams Scheduler::current_params() const {

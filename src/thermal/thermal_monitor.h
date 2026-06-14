@@ -1,8 +1,10 @@
 #pragma once
 #include "thermal.h"
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 // Forward declaration to avoid circular include
@@ -32,4 +34,6 @@ private:
     std::atomic<ThermalState>        m_state{ThermalState::COOL};
     std::atomic<bool>                m_running{true};
     std::thread                      m_thread;
+    std::condition_variable          m_cv;
+    std::mutex                       m_cv_mu;
 };

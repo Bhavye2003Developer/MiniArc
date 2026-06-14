@@ -25,15 +25,27 @@ typedef struct _PROCESSOR_POWER_INFORMATION {
 class WindowsThermalMonitor : public IThermalMonitor {
     IWbemLocator*  m_loc  = nullptr;
     IWbemServices* m_svc  = nullptr;
-    bool           m_wmi  = false;
+    bool           m_wmi          = false;
+    bool           m_com_inited   = false; // did we call CoInitializeEx?
+    bool           m_initialized  = false; // lazy-init done?
     ThermalState   m_prev = ThermalState::COOL;
 
-    bool init_wmi() {
+    // Called on the poll thread on first read()
+    void lazy_init() {
         HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return false;
+        if (SUCCEEDED(hr)) {
+            m_com_inited = true;
+        } else if (hr != RPC_E_CHANGED_MODE) {
+            // COM init failed; WMI unavailable
+            return;
+        }
+        // Try to connect WMI
+        m_wmi = init_wmi_services();
+    }
 
-        hr = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
-                              IID_IWbemLocator, reinterpret_cast<void**>(&m_loc));
+    bool init_wmi_services() {
+        HRESULT hr = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_IWbemLocator, reinterpret_cast<void**>(&m_loc));
         if (FAILED(hr)) return false;
 
         hr = m_loc->ConnectServer(_bstr_t(L"ROOT\\WMI"),
@@ -62,23 +74,24 @@ class WindowsThermalMonitor : public IThermalMonitor {
         ULONG ret = 0;
         while (e->Next(WBEM_INFINITE, 1, &obj, &ret) == S_OK) {
             VARIANT v;
+            VariantInit(&v);   // Fix 2: initialize before Get()
             if (SUCCEEDED(obj->Get(L"CurrentTemperature", 0, &v, nullptr, nullptr))) {
-                // Tenths of Kelvin → Celsius
                 float c = static_cast<float>(v.uintVal) / 10.0f - 273.15f;
                 max_c = std::max(max_c, c);
-                VariantClear(&v);
             }
+            VariantClear(&v);
             obj->Release();
         }
         e->Release();
         return (max_c > 0.0f) ? max_c : -1.0f;
     }
 
-    // Fallback: use processor clock ratio via CallNtPowerInformation
     ThermalState clock_ratio_state() {
         SYSTEM_INFO si;
         GetSystemInfo(&si);
         DWORD n = si.dwNumberOfProcessors;
+        if (n == 0) return ThermalState::COOL;  // Fix 8: guard ppi[0] access
+
         std::vector<PROCESSOR_POWER_INFORMATION> ppi(n);
         if (CallNtPowerInformation(ProcessorInformation, nullptr, 0,
                                    ppi.data(), n * sizeof(PROCESSOR_POWER_INFORMATION)) != 0)
@@ -100,22 +113,24 @@ class WindowsThermalMonitor : public IThermalMonitor {
     }
 
 public:
-    WindowsThermalMonitor() { m_wmi = init_wmi(); }
+    WindowsThermalMonitor() = default;
 
     ~WindowsThermalMonitor() {
         if (m_svc) m_svc->Release();
         if (m_loc) m_loc->Release();
+        if (m_com_inited) CoUninitialize();  // Fix 3: balance CoInitializeEx
     }
 
     ThermalState read() override {
+        if (!m_initialized) {
+            m_initialized = true;
+            lazy_init();  // runs on poll thread — correct COM apartment
+        }
+
         ThermalState next;
         if (m_wmi) {
             float t = wmi_temp();
-            if (t < 0.0f) {
-                next = clock_ratio_state();
-            } else {
-                next = temp_to_state(t, m_prev);
-            }
+            next = (t < 0.0f) ? clock_ratio_state() : temp_to_state(t, m_prev);
         } else {
             next = clock_ratio_state();
         }

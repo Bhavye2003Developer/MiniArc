@@ -10,7 +10,11 @@ ThermalMonitor::ThermalMonitor(Scheduler& scheduler, OnChange on_change)
 {}
 
 ThermalMonitor::~ThermalMonitor() {
-    m_running = false;
+    {
+        std::lock_guard<std::mutex> lk(m_cv_mu);
+        m_running = false;
+    }
+    m_cv.notify_one();
     if (m_thread.joinable()) m_thread.join();
 }
 
@@ -24,6 +28,7 @@ void ThermalMonitor::poll_loop() {
             if (m_on_change) m_on_change(old_state, new_state);
         }
 
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::unique_lock<std::mutex> lk(m_cv_mu);
+        m_cv.wait_for(lk, std::chrono::seconds(2), [this]{ return !m_running.load(); });
     }
 }
