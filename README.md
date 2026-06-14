@@ -9,7 +9,8 @@ Named after Iron Man's arc reactor — miniaturized, self-sufficient power.
 ## What it does
 
 - Runs **Qwen 2.5 0.5B** (Q4_K_M, ~469 MB) fully on-device via [llama.cpp](https://github.com/ggerganov/llama.cpp)
-- Streams tokens to the terminal as they generate
+- Two modes: **terminal CLI** and **local web UI** (`--serve`)
+- Streams tokens in real-time in both modes
 - Monitors CPU temperature every 2 seconds in a background thread
 - Automatically reduces thread count or pauses inference when the device gets hot
 - Resumes at full speed when it cools down
@@ -34,8 +35,8 @@ Hardware: any x86_64 or arm64 machine with ≥ 2 GB RAM free. No GPU required.
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/yourname/miniARC.git
-cd miniARC
+git clone https://github.com/Bhavye2003Developer/MiniArc.git
+cd MiniArc
 ```
 
 ### 2. Download the model
@@ -89,6 +90,8 @@ If you have multiple GGUF files, pass the path explicitly:
 
 ## Usage
 
+### Terminal (CLI mode)
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │  miniARC v0.1.0  ·  qwen2.5-0.5b-instruct-q4_k_m.gguf  │
@@ -96,12 +99,40 @@ If you have multiple GGUF files, pass the path explicitly:
 └─────────────────────────────────────────────────────┘
 Type /help for commands. Ctrl+C to quit.
 
-You: what is the capital of France?
+[14:32:01] You: what is the capital of France?
 miniARC: The capital of France is Paris. It is a major European city and
 a global centre for art, fashion, gastronomy, and culture.
+(3.2s  ·  11.4 tok/s)
 
-You:
+[14:32:08] You:
 ```
+
+Each prompt is stamped with the current time. After every response, miniARC prints how long generation took and the tokens-per-second rate.
+
+### Web UI (serve mode)
+
+Launch the local web server:
+
+```powershell
+# Windows
+.\build\Release\miniARC.exe --serve
+
+# Linux / macOS
+./build/miniARC --serve
+```
+
+The browser opens automatically at `http://localhost:7860`. Use `--port` to pick a different port:
+
+```powershell
+.\build\Release\miniARC.exe --serve --port 8888
+```
+
+**Web UI features:**
+- Real-time token streaming as the model generates
+- Dark, responsive interface
+- Status bar showing thermal state, threads, RAM, and live tokens/sec
+- "Clear conversation" button
+- No internet required — everything runs locally
 
 ### Commands
 
@@ -133,30 +164,38 @@ When temperature changes, miniARC prints inline between responses:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         main.cpp                            │
-│   Chat loop · Command parser · Banner · Token streaming     │
-└────────────────────┬────────────────────────────────────────┘
-                     │ calls
-          ┌──────────▼──────────┐
-          │   Engine            │◄──── InferenceParams (threads, paused)
-          │   engine.cpp        │           │
-          │                     │           │ reads every 32 tokens
-          │  ┌───────────────┐  │    ┌──────┴──────┐
-          │  │  llama.cpp    │  │    │  Scheduler  │
-          │  │  (b5891)      │  │    │  scheduler.cpp│
-          │  │  GGUF model   │  │    └──────┬──────┘
-          │  └───────────────┘  │           │ update(state)
-          └─────────────────────┘    ┌──────┴──────────┐
-                                     │ ThermalMonitor  │
-                                     │ (background     │
-                                     │  thread, 2s)    │
-                                     └──────┬──────────┘
-                                            │ read()
-                                   ┌────────┴────────┐
-                                   │ Platform impl   │
-                                   │ Linux: sysfs    │
-                                   │ macOS: IOKit    │
-                                   │ Windows: WMI    │
-                                   └─────────────────┘
+│   CLI loop · Command parser · Banner · Token streaming      │
+│   --serve → WebServer · auto-open browser                   │
+└────────────┬───────────────────────────┬────────────────────┘
+             │ CLI mode                  │ --serve mode
+             │                  ┌────────▼────────┐
+             │                  │   WebServer     │
+             │                  │   server.cpp    │
+             │                  │   cpp-httplib   │
+             │                  │   SSE streaming │
+             │                  └────────┬────────┘
+             │ calls                     │ calls
+          ┌──▼────────────────────────────▼──────┐
+          │   Engine                              │◄──── InferenceParams
+          │   engine.cpp                          │           │
+          │                                       │           │ reads every 32 tokens
+          │  ┌───────────────┐                    │    ┌──────┴──────┐
+          │  │  llama.cpp    │                    │    │  Scheduler  │
+          │  │  (b5891)      │                    │    │  scheduler.cpp│
+          │  │  GGUF model   │                    │    └──────┬──────┘
+          │  └───────────────┘                    │           │ update(state)
+          └───────────────────────────────────────┘    ┌──────┴──────────┐
+                                                        │ ThermalMonitor  │
+                                                        │ (background     │
+                                                        │  thread, 2s)    │
+                                                        └──────┬──────────┘
+                                                               │ read()
+                                                      ┌────────┴────────┐
+                                                      │ Platform impl   │
+                                                      │ Linux: sysfs    │
+                                                      │ macOS: IOKit    │
+                                                      │ Windows: WMI    │
+                                                      └─────────────────┘
 ```
 
 ### Directory layout
@@ -165,13 +204,16 @@ When temperature changes, miniARC prints inline between responses:
 miniARC/
 ├── CMakeLists.txt                  Top-level build
 ├── src/
-│   ├── main.cpp                    CLI entry point, chat loop, command parser
+│   ├── main.cpp                    Entry point: CLI loop, --serve flag, arg parsing
 │   ├── engine/
 │   │   ├── engine.h
 │   │   └── engine.cpp              llama.cpp wrapper: load, generate, history
 │   ├── scheduler/
 │   │   ├── scheduler.h
 │   │   └── scheduler.cpp           Maps ThermalState → InferenceParams
+│   ├── server/
+│   │   ├── server.h                WebServer class declaration
+│   │   └── server.cpp              HTTP routes, SSE streaming, embedded HTML UI
 │   └── thermal/
 │       ├── thermal.h               ThermalState enum, IThermalMonitor interface,
 │       │                           temp_to_state() with hysteresis
@@ -312,9 +354,10 @@ Speed depends on core count and thermal state. The thermal throttle will reduce 
 
 ---
 
-## Phase 2 roadmap (not yet implemented)
+## Phase 2 roadmap
 
-- HTTP API mode: `miniARC --serve :11434` with OpenAI-compatible `/v1/chat/completions`
+- **[done]** Web UI: `miniARC --serve` — dark-themed local web app with SSE token streaming
 - GPU backend: CUDA / Metal via llama.cpp's existing GPU support
+- OpenAI-compatible REST API: `/v1/chat/completions` endpoint for tool integration
 - Android: JNI wrapper → AAR library
 - iOS: Swift package wrapping the C++ core via Objective-C bridge
