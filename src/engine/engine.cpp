@@ -51,6 +51,7 @@ Engine::~Engine() {
 }
 
 void Engine::load(const std::string& path) {
+    m_model_path = path;
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0; // CPU only in Phase 1
 
@@ -88,6 +89,7 @@ void Engine::unload() {
 
 bool Engine::swap_model(const std::string& new_path) {
     unload();
+    m_model_path = new_path;
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0;
     m_model = llama_model_load_from_file(new_path.c_str(), mparams);
@@ -249,4 +251,9 @@ void Engine::clear_history() {
 
 size_t Engine::ram_usage_mb() const {
     return process_ram_mb();
+}
+
+std::string Engine::current_model_name() const {
+    size_t pos = m_model_path.find_last_of("/\\");
+    return (pos == std::string::npos) ? m_model_path : m_model_path.substr(pos + 1);
 }

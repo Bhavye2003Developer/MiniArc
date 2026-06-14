@@ -30,8 +30,9 @@ public:
     // Returns false and prints error if new path fails to load.
     bool swap_model(const std::string& new_path);
 
-    float  last_tokens_per_sec() const { return m_tps; }
-    size_t ram_usage_mb()        const;
+    float  last_tokens_per_sec()  const { return m_tps; }
+    size_t ram_usage_mb()         const;
+    std::string current_model_name() const;
 
     // Not copyable
     Engine(const Engine&) = delete;
@@ -50,6 +51,7 @@ private:
     int m_n_ctx;
     std::vector<ChatTurn> m_history;
     float m_tps = 0.0f;
+    std::string m_model_path;
 
     static const std::string SYSTEM_PROMPT;
 };
